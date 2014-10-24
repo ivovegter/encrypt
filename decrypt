@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# decrypt -- Simple directory decryption.
+#
+# Copyright (c) 2014 Ivo Vegter
+# Licensed under: GNU GPL v3.0
+#
+# Alias for 'encrypt -d'
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the 
+# GNU General Public License for more details.
+#
+# A copy of the full GNU General Public Licence can be found at:
+# http://www.gnu.org/licenses/
+
+which encrypt &>/dev/null
+if [[ $? -eq 0 ]]; then
+  encrypt -d "$@"
+else
+  echo "Encryption script not found. Perhaps 'encrypt' has been moved/deleted."
+  exit 1
+fi

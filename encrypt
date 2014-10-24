@@ -1,0 +1,290 @@
+#!/bin/bash
+#
+# encrypt -- Simple directory encryption.
+#
+# Copyright (C) 2014 Ivo Vegter
+# Licensed under GNU GPL v3.0
+#
+# Encrypts a directory, or decrypts a previously encrypted directory.
+# Wraps the underlying works into two simple commands:
+#
+# encrypt <directory>
+# - encrypt the contents of <directory>. This is slow the first time
+#   it is done.
+# encrypt -d <directory> OR decrypt <directory>
+# - decrypt the contents of a previously encrypted <directory>, and
+#   make it available as clear-text in <directory>.clear
+#
+# By default, the initial encryption will securely wipe the original
+# unencrypted contents. This is extra slow, so there is an -f option
+# to skip this step.
+#
+# It will pause to ask for the encyption passphrase, when required. It
+# handles most real-world situations gracefully, to make its use as
+# intuitive as possible.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# A copy of the full GNU General Public Licence can be found at:
+# http://www.gnu.org/licenses/
+
+shopt -s globstar
+shopt -s dotglob
+
+idletime=30
+error=1
+
+echo_usage () { 
+echo "Usage: encrypt [-d] [-f] [-p password] <directory>"
+USAGE=$(cat <<'EOF' 
+
+Encrypts the contents of <directory>. If -d option is given, decrypts the contents of <directory> and makes it available as clear text in <directory>.clear. The 'decrypt' command is an alias for 'encrypt -d'.
+
+By default, the initial encryption also securely wipes the original data. To skip this step, trading speed for security, specify the fast option, -f.
+
+An optional password can be passed on the command line using the -p option, but only to decrypt directories that are already encrypted. Choosing a password for first-time encryption must be done interactively.
+EOF
+) 
+IFSBAK=$IFS 
+IFS='' 
+echo ${USAGE}
+IFS=$IFSBAK 
+unset IFSBAK 
+}
+
+#Process command line arguments
+
+decrypt=false
+fast=false
+password=""
+help=false
+argdir=""
+
+set -- $(getopt dfhp: "$@")
+while [ $# -gt 0 ]
+do
+    case "$1" in
+    (-d) decrypt=true;;
+    (-f) fast=true;;
+    (-h) help=true;;
+    (-p) password="${2}"; shift;;
+    (--) shift; argdir="$*"; break;;
+    (-*) help=true; echo "FAILED: unrecognised option $1" 1>&2; break;;
+    (*)  argdir="$*"; break;;
+    esac
+    shift
+done
+
+# Exit on help or invalid command line arguments.
+if [[ "${help}" == "true" ]]; then 
+  echo_usage
+  exit
+fi
+
+# If command line argument has a trailing slash, remove it.
+if [[ "${argdir}" == *\/ ]]; then
+  argdir="${argdir%\/}"
+fi
+
+dir_resolve()
+{
+# cd to desired directory
+# if fail, quell any error messages but return exit status
+cd "$*" 2>/dev/null || return $?  
+echo "`pwd -P`" # output full, link-resolved path
+}
+
+if [[ "${argdir}" != *\/* ]]; then
+  # If path was not specified on the command line, assume pwd. 
+  pathname="`pwd -P`/${argdir}"
+elif [[ "${argdir%/*}" != "" ]]; then
+  # Turn relative path into absolute path.
+  pathname="`dir_resolve \"${argdir%/*}\"`/${argdir##*/}"
+  if [[ $? -ne 0 ]]; then
+    echo "FAILED: ${argdir} not found."
+    exit $error
+  fi
+else
+  pathname="${argdir}"
+fi
+
+# If the directory name has a .clear extension, remove it.
+if [[ "${pathname}" == *.* ]]; then
+  extension=`echo -n "${pathname##*.}" | tr '[:upper:]' '[:lower:]'`
+  if [[ "$extension" == "clear" ]]; then
+    pathname="${pathname%.*}"
+  fi
+fi
+
+cryptdir="${pathname}"
+cleardir="${pathname}.clear"
+
+# Main function for first-time encryption:
+encrypt_directory() {
+  echo "You will be asked for a password with which to encrypt your data."
+  echo "Without this password, YOUR DATA CANNOT BE RECOVERED by ordinary means."
+  echo "That, after all, is the point of encryption."
+  echo ""
+  echo "Directory to be encrypted: ${cryptdir}"
+  echo ""
+  while true; do
+    read -e -p "Continue with encryption? (y/n): " confirm
+    confirm="$(echo ${confirm} | tr '[:upper:]' '[:lower:]')"
+    if [[ "${confirm}" == "yes" ]]; then
+      break
+    elif [[ "${confirm:0:1}" == "y" ]]; then
+      echo "Please type out 'yes'"
+      continue
+    else
+      return $error
+    fi
+  done
+  tempdir="${pathname}.temp"
+  mv "${cryptdir}" "${tempdir}" || return $?
+  mkdir -p "${cryptdir}" || return $?
+  mkdir -p "${cleardir}" || return $?
+  encfs --standard "${cryptdir}" "${cleardir}" 1>/dev/null
+  echo ""
+  echo "Encrypting ${cryptdir} contents. This can take a while."
+  rsync -a "${tempdir}/" "${cleardir}" || return $?
+  sync
+  until fusermount -u "${cleardir}"; do sleep 1; done
+  rmdir "${cleardir}" || return $?
+  if [ "${fast}" != true ]; then
+    echo "Shredding original ${cryptdir} contents. This can take another while."
+    find "${tempdir}" -print | xargs shred -uz 2>/dev/null
+  fi
+  rm -rf "${tempdir}" || return $?
+  echo ""
+  return 0
+}
+
+# If the encrypted directory (or directory to be encrypted) does not 
+# exist, exit.
+if [[ ! -d "${cryptdir}" ]]; then 
+  echo "FAILED: $cryptdir does not exist."
+  echo "Aborting."
+  exit $error
+fi
+
+# Check whether $cryptdir is encrypted or not.
+stat -t "${cryptdir}"/.encfs*.xml >/dev/null 2>&1 && encrypted="true" || encrypted="false"
+
+if [[ "$encrypted" == "false" && "$decrypt" == "true" ]]; then
+  # $cryptdir cannot be decrypted, because it is not encrypted
+  echo "FAILED: ${cryptdir} cannot be decrypted, because it is not encrypted."
+  echo "To encrypt ${cryptdir}, omit the -d option."
+  echo "Aborting."
+  exit $error
+fi
+
+if [[ ! -d "${cleardir}" ]]; then
+  if [[ "$encrypted" == "false" ]]; then
+    # Go forth and encrypt
+    if encrypt_directory; then 
+      echo "SUCCESS: ${cryptdir} encrypted."
+      echo "To view in ${cleardir} run 'encrypt' with the -d option (or try 'decrypt')."
+      exit
+    else
+      echo "Encryption failed."
+      echo "Aborting."
+      exit $error
+    fi
+  else
+    # If cleardir does not exist...
+    if [[ "$decrypt" == "true" ]]; then
+      # Go mount it
+      mkdir -p "${cleardir}"
+      if [[ "${password}" != "" ]]; then
+        echo "${password}" | encfs --stdinpass --idle="${idletime}" "${cryptdir}" "${cleardir}"
+        if [[ $? -ne 0 ]]; then
+          echo "FAILED: could not decrypt ${cryptdir} to ${cleardir}."
+          rmdir "${cleardir}"
+          exit $error
+        fi
+      else
+        encfs --idle="${idletime}" "${cryptdir}" "${cleardir}"
+        if [[ $? -ne 0 ]]; then
+          echo "FAILED: could not decrypt ${cryptdir} to ${cleardir}."
+          rmdir "${cleardir}"
+          exit $error
+        fi
+      fi
+      echo "SUCCESS: ${cryptdir} decrypted to ${cleardir}."
+      echo "Idle time before re-encryption is ${idletime} minutes."
+      exit
+    else
+      # $cryptdir cannot be encrypted, because it is already encrypted
+      echo "FAILED: ${cryptdir} cannot be encrypted because it is already encrypted."
+      echo "No decrypted version exists."
+      echo "To decrypt ${cryptdir}, run 'encrypt' with the -d option (or try 'decrypt')."
+      echo "Aborting."
+      exit $error
+    fi
+  fi
+fi
+
+mount 2>/dev/null | grep "encfs" 2>/dev/null | grep "$cleardir" &>/dev/null
+if [[ $? -eq 0 ]]; then
+  # $cleardir exists and is a mounted encfs volume
+  if [[ "$decrypt" == "true" ]]; then
+    echo "${cryptdir} is already decrypted and available in ${cleardir}."
+    echo "To re-encrypt it, run 'encrypt' without the -d option."
+  else
+    # If we need to encrypt $cleardir, simply unmount it.
+    until fusermount -u "${cleardir}"; do sleep 1; done
+    rmdir "${cleardir}" 2>/dev/null
+    echo "SUCCESS: ${cryptdir} encrypted."
+    echo "To decrypt it, run 'encrypt' with the -d option (or try 'decrypt')."
+    exit
+  fi
+else
+  # $cleardir exists but is not a mounted encfs volume
+  if [[ "$decrypt" == "true" ]]; then
+    if rmdir test.clear 2>/dev/null; then
+    # If it is empty, just mount it anyway.
+      # Go mount it
+      mkdir -p "${cleardir}"
+      encfs --idle="${idletime}" "${cryptdir}" "${cleardir}"
+      echo "SUCCESS: ${cryptdir} decrypted to ${cleardir}."
+      echo "Idle time before re-encryption is ${idletime} minutes."
+      exit
+    else
+      # Can't decrypt anything into $cleardir because it would mask existing content.
+      echo "FAILED: ${cryptdir} cannot be decrypted, because ${cleardir} already exists and contains data that might be overwritten."
+      echo "To decrypt ${cryptdir}, first move or remove ${cleardir}."
+      echo "Aborting."
+      exit $error
+    fi
+  else
+    # Rare case in which $cryptdir is not encrypted, but $cleardir does exist.
+    if rmdir test.clear 2>/dev/null; then
+      # Proceed as normal, and encrypt $cryptdir.
+      if encrypt_directory; then 
+        echo "SUCCESS: ${cryptdir} encrypted."
+        echo "To view in ${cleardir} run 'encrypt' with the -d option (or try 'decrypt')."
+        exit
+      else
+        echo "Encryption failed."
+        echo "Aborting."
+        exit $error
+      fi
+    else
+      # Complain.
+      echo "FAILED: ${cryptdir} cannot be encrypted, because ${cleardir} already exists and contains data that might be overwritten."
+      echo "To encrypt ${cryptdir}, first move or remove ${cleardir}."
+      echo "Aborting."
+      exit $error
+    fi
+  fi
+fi 
+
+exit
