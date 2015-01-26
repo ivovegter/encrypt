@@ -181,7 +181,7 @@ stat -t "${cryptdir}"/.encfs*.xml >/dev/null 2>&1 && encrypted="true" || encrypt
 if [[ "$encrypted" == "false" && "$decrypt" == "true" ]]; then
   # $cryptdir cannot be decrypted, because it is not encrypted
   echo "FAILED: ${cryptdir} cannot be decrypted, because it is not encrypted."
-  echo "To encrypt ${cryptdir}, omit the -d option."
+  echo "To encrypt ${cryptdir}, use \'encrypt\' without the -d option."
   echo "Aborting."
   exit $error
 fi
@@ -249,9 +249,8 @@ if [[ $? -eq 0 ]]; then
 else
   # $cleardir exists but is not a mounted encfs volume
   if [[ "$decrypt" == "true" ]]; then
-    if rmdir test.clear 2>/dev/null; then
-    # If it is empty, just mount it anyway.
-      # Go mount it
+    if rmdir "${cleardir}" 2>/dev/null; then
+      # If it is empty, just mount it anyway.
       mkdir -p "${cleardir}"
       encfs --idle="${idletime}" "${cryptdir}" "${cleardir}"
       echo "SUCCESS: ${cryptdir} decrypted to ${cleardir}."
