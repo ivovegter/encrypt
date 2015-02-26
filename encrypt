@@ -244,12 +244,12 @@ fi
 # volume, nor an encrypted directory. This leaves various options.
 if rmdir "${directory}" 2>/dev/null; then
     # If it is empty...
-    mkdir -p "${directory}"  # ...recreate it
     if [[ -d "${cryptdir}" ]]; then
 	# If ${cryptdir} exists, then it timed out instead of being re-encrypted manually.
 	if [[ "${decrypt}" == "true" ]]; then
 	    # To decrypt it again, simply decrypt (mount) $cryptdir
 	    # into (onto) it.
+            mkdir -p "${cleardir}"  # ...first recreate it
             if [[ "${password}" != "" ]]; then
                 echo -e "${password}" | encfs --stdinpass --idle="${idletime}" "${cryptdir}" "${cleardir}"
             else
@@ -269,6 +269,7 @@ if rmdir "${directory}" 2>/dev/null; then
         fi
     else
 	# If $cryptdir does not exist, it is simply an encryption request on an empty directory.
+	mkdir -p "${directory}"  # ...first recreate it
         if encrypt_directory; then
             success "${directory} encrypted. To decrypt it, run 'encrypt' with the -d option (or try 'decrypt')."
         else
